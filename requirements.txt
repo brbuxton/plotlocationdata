@@ -1,3 +1,5 @@
-folium
-flask
+folium~=0.15.1
+flask~=3.0.0
 flask-ngrok2
+requests~=2.31.0
+requests_toolbelt
