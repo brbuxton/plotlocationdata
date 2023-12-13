@@ -1,9 +1,12 @@
 import folium
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 import os
 from flask import Flask, request, jsonify
 from flask_ngrok2 import run_with_ngrok
 import requests
 from requests_toolbelt.multipart.encoder import MultipartEncoder
+import json
 
 app = Flask(__name__)
 run_with_ngrok(app=app, auth_token=os.getenv('NGROK'))
@@ -22,62 +25,101 @@ def plot_blue_dots(coords, map_obj):
         ).add_to(map_obj)
 
 
-@app.route('/webhook', methods=['GET'])
-def get_validator():
-    return os.getenv('VALIDATOR')
-
-
-def coordinate_list(response):
-    coordinates = []
-    for client in response['data']['observations']:
-        # Fill the array with the coordinates of each of the detected clients
-        coordinates.append((client['location']['lat'], client['location']['lng']))
-    return coordinates
-
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    # Place the JSON of the POST data into a variable
-    data = request.json
-    # TODO: Determine if POST is Webhook or Scanning data
-    # TODO: If statement to record current location of clients or trigger webhook
-    print(data)
-
-
-def client_list(response):
-    coordinates = coordinate_list(response)
-    # Send the array of coordinates to the main function
-    if coordinates is not None:
-        generate_map(coordinates)
-        return jsonify({'message': 'Map created successfully.'}), 200
-    else:
-        return jsonify({'error': 'Latitude and longitude are required.'}), 400
-
-# TODO: Add function for Webhook trigger
-
-
-def webex_message(client):  # FIXME: Fix RoomID
-    m = MultipartEncoder({'roomId': 'Y2lzY2.....',
+def webex_post_message(client):
+    m = MultipartEncoder({'toPersonEmail': 'brbuxton@cisco.com',
                           'text': f'{client} disconnected and was last seen here',
-                          'files': ('map_with_blue_dots.png',
-                                    open('map_with_blue_dots.png', 'rb'),
+                          'files': ('map.png',
+                                    open('map.png', 'rb'),
                                     'image/png')})
 
     r = requests.post('https://webexapis.com/v1/messages', data=m,
-                      headers={'Authorization': f'Bearer {os.getenv('WEBEXTOKEN')}',
+                      headers={'Authorization': f'Bearer {os.getenv("WEBEXTOKEN")}',
                                'Content-Type': m.content_type})
     print(r.text)
 
 
 def generate_map(coordinates):
     # Create a folium map centered around the first set of coordinates
-    map_obj = folium.Map(location=coordinates[0], zoom_start=15)
+    map_obj = folium.Map(location=coordinates[0], zoom_start=19)
 
     # Plot the blue dots on the map
     plot_blue_dots(coordinates, map_obj)
 
-    # Save the map as an PNG file
-    map_obj.save("map_with_blue_dots.png")
+    # Save the map as a PDF
+    save_folium_map_as_png(map_obj)
+
+
+def save_folium_map_as_png(map_object, filename='map.png'):
+    # Save the Folium map as an HTML
+    map_object.save("map_with_blue_dots.html")
+
+    # Configure Selenium webdriver options
+    chrome_options = Options()
+    chrome_options.add_argument('--headless')  # Run in headless mode (without opening a browser window)
+
+    # Create a webdriver instance
+    driver = webdriver.Chrome(options=chrome_options)
+
+    try:
+        # Open the HTML file in the browser using webdriver
+        driver.get('file://' + 'C:/Users/Brian/PycharmProjects/plotlocationdata/map_with_blue_dots.html')
+
+        # Set the window size to a specific size (optional)
+        driver.set_window_size(1920, 1080)  # Adjust as needed
+
+        # Save a screenshot of the entire page
+        driver.save_screenshot(filename)
+    finally:
+        # Close the webdriver
+        driver.quit()
+
+
+def record_coordinates(coordinates):
+    # Load existing data from the JSON file
+    file_path = 'coordinates.json'
+    try:
+        with open(file_path, 'r') as json_file:
+            existing_data = json.load(json_file)
+    except FileNotFoundError:
+        existing_data = {}
+
+    # Update the existing data with new data
+    existing_data.update(coordinates)
+
+    # Write the updated data back to the JSON file
+    with open(file_path, 'w') as json_file:
+        json.dump(existing_data, json_file, indent=2)
+
+
+def get_coordinates(client_mac):
+    file_path = 'coordinates.json'
+    with open(file_path, 'r') as json_file:
+        existing_data = json.load(json_file)
+    return existing_data[client_mac]
+
+
+@app.route('/webhook', methods=['GET'])
+def get_validator():
+    return os.getenv('VALIDATOR')
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    # Place the JSON of the POST data into a variable
+    data = request.json
+    print(data)
+    if data['version'] == '0.1':
+        if data['alertType'] == 'Client connectivity changed' and data['alertData']['connected'] == 'false':
+            generate_map([tuple(get_coordinates(data['alertData']['mac'].lower()))])
+            webex_post_message(data['alertData']['mac'])
+        return jsonify({'message': 'Webhook received successfully.'}), 200
+    elif data['version'] == '2.0':
+        coordinates = {entry['clientMac']: (entry['location']['lat'], entry['location']['lng'])
+                       for entry in data['data']['observations']}
+        record_coordinates(coordinates)
+        return jsonify({'message': 'Location data received successfully.'}), 200
+    else:
+        return jsonify({'error': 'Latitude and longitude are required.'}), 400
 
 
 if __name__ == "__main__":
