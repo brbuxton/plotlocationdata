@@ -38,6 +38,39 @@ def webex_post_message(client):
     print(r.text)
 
 
+def check_duplicate_webhook(client_mac, connected, file_path='alertsent.json'):
+    try:
+        with open(file_path, 'r') as json_file:
+            alert_data = json.load(json_file)
+    except FileNotFoundError:
+        alert_data = []
+    if client_mac in alert_data and connected == 'false':
+        print('SKIP')
+        print(alert_data)
+        print(connected)
+        return ('skip')
+    elif client_mac in alert_data and connected == 'true':
+        alert_data.remove(client_mac)
+        print('REMOVED')
+        print(alert_data)
+        print(connected)
+        with open(file_path, 'w') as json_file:
+            json.dump(alert_data, json_file)
+        return ('removed')
+    elif client_mac not in alert_data and connected == 'false':
+        alert_data.append(client_mac)
+        print('ADDED/PASS')
+        print(alert_data)
+        print(connected)
+        with open(file_path, 'w') as json_file:
+            json.dump(alert_data, json_file)
+        return ('pass')
+    else:
+        print('LAST ELSE SKIP')
+        print(alert_data)
+        print(connected)
+        return ('skip')
+
 def generate_map(coordinates):
     # Create a folium map centered around the first set of coordinates
     map_obj = folium.Map(location=coordinates[0], zoom_start=19)
@@ -108,10 +141,15 @@ def webhook():
     # Place the JSON of the POST data into a variable
     data = request.json
     print(data)
-    if data['version'] == '0.1':
-        if data['alertType'] == 'Client connectivity changed' and data['alertData']['connected'] == 'false':
-            generate_map([tuple(get_coordinates(data['alertData']['mac'].lower()))])
-            webex_post_message(data['alertData']['mac'])
+    if data['version'] == '0.1' and data['alertType'] == 'Client connectivity changed' and data['sharedSecret'] == 'testpsk':
+        test = check_duplicate_webhook(data['alertData']['mac'], data['alertData']['connected'])
+        if data['alertData']['connected'] == 'false' and test == 'pass':
+            mac = data['alertData']['mac'].lower()
+            print(mac)
+            coordinates = [tuple(get_coordinates(mac))]
+            print(coordinates)
+            generate_map(coordinates)
+            webex_post_message(mac)
         return jsonify({'message': 'Webhook received successfully.'}), 200
     elif data['version'] == '2.0':
         coordinates = {entry['clientMac']: (entry['location']['lat'], entry['location']['lng'])
